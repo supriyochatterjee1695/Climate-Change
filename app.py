@@ -89,7 +89,7 @@ def create_kpi_card(title, value, subtitle, icon=None):
             html.H3(value, className="mb-1", style={'color': COLORS['primary'], 'fontWeight': '700'}),
             html.P(subtitle, className="text-muted mb-0", style={'fontSize': '0.8rem'})
         ]),
-        style={'border': 'none', 'borderRadius': '12px', 'backgroundColor': COLORS['white'], 'boxShadow': '0 4px 15px rgba(0,0,0,0.05)'}
+        style={'border': f'2px solid {COLORS["primary"]}', 'borderRadius': '12px', 'backgroundColor': COLORS['white'], 'boxShadow': '0 4px 15px rgba(0,0,0,0.05)'}
     )
 
 # Header
@@ -99,13 +99,28 @@ header = html.Div([
         html.P("Analyzing Global Forest Cover, Emissions, and Climate Trends (2000-2025)", className="text-muted")
     ], className="mb-4"),
     dbc.Row([
-        dbc.Col(dbc.Select(
-            id='country-selector',
-            options=[{'label': 'Global (All Countries)', 'value': 'all'}] + 
-                    [{'label': c, 'value': c} for c in df['country'].unique()],
-            value='all',
-            style={'borderRadius': '8px', 'border': f'1px solid {COLORS["accent"]}'}
-        ), width=12, md=4)
+        dbc.Col([
+            html.Label("Select Country", className="text-muted mb-1", style={'fontSize': '0.9rem'}),
+            dbc.Select(
+                id='country-selector',
+                options=[{'label': 'Global (All Countries)', 'value': 'all'}] + 
+                        [{'label': c, 'value': c} for c in df['country'].unique()],
+                value='all',
+                style={'borderRadius': '8px', 'border': f'1px solid {COLORS["accent"]}'}
+            )
+        ], width=12, md=4),
+        dbc.Col([
+            html.Label("Select Year Range", className="text-muted mb-1", style={'fontSize': '0.9rem'}),
+            dcc.RangeSlider(
+                id='year-range',
+                min=df['year'].min(),
+                max=df['year'].max(),
+                step=1,
+                value=[df['year'].min(), df['year'].max()],
+                marks={str(year): str(year) for year in range(df['year'].min(), df['year'].max() + 1, 5)},
+                className="mt-2"
+            )
+        ], width=12, md=8)
     ], className="mb-4")
 ], className="container-fluid pt-4")
 
@@ -164,10 +179,15 @@ app.layout = html.Div([
      Output('scatter-plot', 'figure'),
      Output('composite-index-plot', 'figure'),
      Output('corr-matrix', 'figure')],
-    [Input('country-selector', 'value')]
+    [Input('country-selector', 'value'),
+     Input('year-range', 'value')]
 )
-def update_dashboard(selected_country):
+def update_dashboard(selected_country, year_range):
+    # Initial filter by country
     dff = df if selected_country == 'all' else df[df['country'] == selected_country]
+    
+    # Filter by year range
+    dff = dff[(dff['year'] >= year_range[0]) & (dff['year'] <= year_range[1])]
     
     # ... (KPI calculations)
     recent_year = dff['year'].max()
@@ -199,7 +219,7 @@ def update_dashboard(selected_country):
         dbc.Col(create_kpi_card("Forest Loss", f"{forest_change:.1f}%", f"Since {start_year}"), width=12, sm=6, lg=2),
         dbc.Col(create_kpi_card("CO2 Growth", f"+{em_growth:.1f}%", "Emission Trajectory"), width=12, sm=6, lg=2),
         dbc.Col(create_kpi_card("Temp Anomaly", f"{temp_avg:.2f}°C", "Annual Average"), width=12, sm=6, lg=2),
-        dbc.Col(create_kpi_card("Total Disasters", f"{dis_total}", "2000-2025 Period"), width=12, sm=6, lg=2),
+        dbc.Col(create_kpi_card("Total Disasters", f"{dis_total}", f"{year_range[0]}-{year_range[1]} Period"), width=12, sm=6, lg=2),
         dbc.Col(create_kpi_card("CO2/Forest Ha", f"{em_intensity:.2f}", "Emissions Intensity"), width=12, sm=6, lg=2),
         dbc.Col(create_kpi_card("Forest-Temp", f"{corr_val:.2f}", "Correlation"), width=12, sm=6, lg=2),
     ])
@@ -208,7 +228,7 @@ def update_dashboard(selected_country):
     fig_ts = make_subplots(specs=[[{"secondary_y": True}]])
     
     if selected_country == 'all':
-        global_trends = df.groupby('year').agg({'forest_percent': 'mean', 'co2_emissions_mtco2e': 'sum'}).reset_index()
+        global_trends = dff.groupby('year').agg({'forest_percent': 'mean', 'co2_emissions_mtco2e': 'sum'}).reset_index()
         fig_ts.add_trace(go.Scatter(x=global_trends['year'], y=global_trends['forest_percent'], name="Forest Cover %", line=dict(color=COLORS['primary'], width=3)), secondary_y=False)
         fig_ts.add_trace(go.Bar(x=global_trends['year'], y=global_trends['co2_emissions_mtco2e'], name="CO2 Emissions", marker_color=COLORS['secondary'], opacity=0.6), secondary_y=True)
     else:
@@ -218,7 +238,10 @@ def update_dashboard(selected_country):
     fig_ts.update_layout(height=400, **PLOT_TEMPLATE['layout'], legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
 
     # 2. Heatmap
-    heatmap_data = df.pivot(index='country', columns='year', values='temp_anomaly_c')
+    heatmap_data = dff.pivot(index='country', columns='year', values='temp_anomaly_c')
+    # If single country selected, ensure the index is preserved correctly for px.imshow
+    if selected_country != 'all':
+        heatmap_data = heatmap_data.loc[[selected_country]]
     fig_heatmap = px.imshow(
         heatmap_data,
         labels=dict(x="Year", y="Country", color="Temp Anomaly"),
@@ -227,7 +250,7 @@ def update_dashboard(selected_country):
     fig_heatmap.update_layout(height=400, **PLOT_TEMPLATE['layout'])
 
     # 3. Disaster Bar Chart
-    fig_disaster = px.bar(dff if selected_country != 'all' else df, x='year', y='disasters_count', 
+    fig_disaster = px.bar(dff, x='year', y='disasters_count', 
                          color='country' if selected_country == 'all' else None,
                          color_discrete_sequence=[COLORS['primary'], COLORS['secondary'], COLORS['accent'], '#3B82F6'] if selected_country == 'all' else [COLORS['primary']])
     fig_disaster.update_layout(height=350, **PLOT_TEMPLATE['layout'], showlegend=False if selected_country != 'all' else True)
